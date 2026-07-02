@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <cmath>
+
 VoxMidiAudioProcessor::VoxMidiAudioProcessor()
     : AudioProcessor (BusesProperties()
         .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -8,14 +10,25 @@ VoxMidiAudioProcessor::VoxMidiAudioProcessor()
 {
 }
 
-void VoxMidiAudioProcessor::prepareToPlay (double, int) {}
+void VoxMidiAudioProcessor::prepareToPlay (double sampleRate, int)
+{
+    windowSize = 2048;
+    hopSize = 512;
+
+    detector.setup (sampleRate, windowSize);
+    tracker.setup (sampleRate);
+
+    ring.assign ((size_t) windowSize, 0.0f);
+    analysis.assign ((size_t) windowSize, 0.0f);
+    ringWrite = 0;
+    sinceAnalysis = 0;
+}
 
 bool VoxMidiAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto& out = layouts.getMainOutputChannelSet();
     if (out != juce::AudioChannelSet::mono() && out != juce::AudioChannelSet::stereo())
         return false;
-    // input must match output channel count (mono voice is the usual case)
     return layouts.getMainInputChannelSet() == out;
 }
 
@@ -24,13 +37,48 @@ void VoxMidiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // M1: measure peak input for the meter, pass audio through untouched, emit no MIDI.
-    // M2+ will feed the buffer to the pitch detector and fill `midi` with note events.
-    float peak = 0.0f;
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        peak = juce::jmax (peak, buffer.getMagnitude (ch, 0, buffer.getNumSamples()));
-    currentLevel.store (peak);
+    const int n  = buffer.getNumSamples();
+    const int ch = juce::jmax (1, buffer.getNumChannels());
 
+    float peak = 0.0f;
+
+    for (int i = 0; i < n; ++i)
+    {
+        // downmix to mono
+        float s = 0.0f;
+        for (int c = 0; c < buffer.getNumChannels(); ++c)
+            s += buffer.getSample (c, i);
+        s /= (float) ch;
+
+        peak = juce::jmax (peak, std::abs (s));
+
+        ring[(size_t) ringWrite] = s;
+        ringWrite = (ringWrite + 1) % windowSize;
+
+        if (++sinceAnalysis >= hopSize)
+        {
+            sinceAnalysis = 0;
+
+            // linearize the ring buffer oldest -> newest
+            float sq = 0.0f;
+            for (int k = 0; k < windowSize; ++k)
+            {
+                const float v = ring[(size_t) ((ringWrite + k) % windowSize)];
+                analysis[(size_t) k] = v;
+                sq += v * v;
+            }
+            const float rms = std::sqrt (sq / (float) windowSize);
+
+            float prob = 0.0f;
+            const float freq = detector.process (analysis.data(), windowSize, prob);
+            const int note = tracker.process (freq, prob, rms);
+
+            currentNote.store (note);
+            currentFreq.store (tracker.getCurrentFrequency());
+        }
+    }
+
+    currentLevel.store (peak);
     juce::ignoreUnused (midi); // MIDI output wired in M3
 }
 

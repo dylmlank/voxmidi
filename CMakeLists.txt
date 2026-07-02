@@ -31,7 +31,11 @@ juce_generate_juce_header(VoxMIDI)
 
 target_sources(VoxMIDI PRIVATE
     source/PluginProcessor.cpp
-    source/PluginEditor.cpp)
+    source/PluginEditor.cpp
+    source/dsp/YinPitchDetector.cpp
+    source/dsp/NoteTracker.cpp)
+
+target_include_directories(VoxMIDI PRIVATE source)
 
 target_compile_definitions(VoxMIDI PUBLIC
     JUCE_WEB_BROWSER=0
