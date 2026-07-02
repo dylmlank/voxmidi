@@ -1,0 +1,17 @@
+build/
+cmake-build-*/
+.vs/
+.idea/
+*.user
+# JUCE / Projucer generated (we use CMake, but ignore these just in case)
+JuceLibraryCode/
+Builds/
+# build artefacts
+[Dd]ebug/
+[Rr]elease/
+*.vst3
+*.exe
+*.obj
+*.pdb
+# local secrets/config
+.env
