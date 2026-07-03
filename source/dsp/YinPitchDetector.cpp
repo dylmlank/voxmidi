@@ -2,17 +2,18 @@
 
 #include <cmath>
 
-void YinPitchDetector::setup (double sr, int windowSize)
+void YinPitchDetector::setup (double sr, int maxWindow)
 {
     sampleRate = sr;
-    halfWindow = windowSize / 2;
-    yin.assign ((size_t) halfWindow, 0.0f);
+    maxHalfWindow = maxWindow / 2;
+    yin.assign ((size_t) maxHalfWindow, 0.0f);
 }
 
 float YinPitchDetector::process (const float* buffer, int numSamples, float& outProbability)
 {
     outProbability = 0.0f;
-    if (halfWindow < 2 || numSamples < halfWindow * 2)
+    const int halfWindow = numSamples / 2;
+    if (halfWindow < 2 || halfWindow > maxHalfWindow)
         return 0.0f;
 
     // Step 1: difference function
@@ -51,19 +52,19 @@ float YinPitchDetector::process (const float* buffer, int numSamples, float& out
     }
 
     if (tauEstimate == -1)
-        return 0.0f; // nothing periodic enough
+        return 0.0f;
 
     outProbability = 1.0f - yin[(size_t) tauEstimate];
 
     // Step 4: parabolic interpolation for sub-sample precision
-    const float betterTau = parabolicInterpolation (tauEstimate);
+    const float betterTau = parabolicInterpolation (tauEstimate, halfWindow);
     if (betterTau <= 0.0f)
         return 0.0f;
 
     return (float) (sampleRate / (double) betterTau);
 }
 
-float YinPitchDetector::parabolicInterpolation (int tauEstimate) const
+float YinPitchDetector::parabolicInterpolation (int tauEstimate, int halfWindow) const
 {
     const int x0 = (tauEstimate > 0) ? tauEstimate - 1 : tauEstimate;
     const int x2 = (tauEstimate + 1 < halfWindow) ? tauEstimate + 1 : tauEstimate;

@@ -32,8 +32,11 @@ juce_generate_juce_header(VoxMIDI)
 target_sources(VoxMIDI PRIVATE
     source/PluginProcessor.cpp
     source/PluginEditor.cpp
+    source/VoxLookAndFeel.cpp
     source/dsp/YinPitchDetector.cpp
-    source/dsp/NoteTracker.cpp)
+    source/dsp/NoteTracker.cpp
+    source/dsp/ScaleSnapper.cpp
+    source/dsp/KeyEstimator.cpp)
 
 target_include_directories(VoxMIDI PRIVATE source)
 
