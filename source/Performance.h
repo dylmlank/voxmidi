@@ -28,6 +28,7 @@ public:
     void processSample (int sampleOffset, juce::MidiBuffer& midi, juce::MidiOutput* out);
 
     int currentRootForDisplay() const { return (root >= 0) ? juce::jlimit (0, 127, root + shift) : -1; }
+    int currentRootUnshifted()  const { return root; } // in-key root, no octave/transpose
 
 private:
     void emitOn  (int note, int vel, int off, juce::MidiBuffer&, juce::MidiOutput*);

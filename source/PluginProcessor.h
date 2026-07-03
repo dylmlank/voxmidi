@@ -71,6 +71,13 @@ private:
     int  lastInputNote = -1;
     bool perfHadNotes = false;
 
+    // expression state
+    float bendSmoothed = 0.0f;
+    int   lastWheel = 8192;
+    int   lastCC = -1;
+    int   lastSentBendRange = -1;
+    float vibSlow = 0.0f, vibDepth = 0.0f;
+
     std::vector<float> ring;      // circular buffer of recent mono samples
     std::vector<float> analysis;  // linearized window handed to the detector
     int ringSize = 4096;          // == max analysis window
@@ -99,6 +106,15 @@ private:
     std::atomic<float>* pArpGate     = nullptr;
     std::atomic<float>* pTranspose   = nullptr;
     std::atomic<float>* pTempo       = nullptr;
+    std::atomic<float>* pBend        = nullptr;
+    std::atomic<float>* pBendRange   = nullptr;
+    std::atomic<float>* pGlide       = nullptr;
+    std::atomic<float>* pModSource   = nullptr;
+    std::atomic<float>* pModCC       = nullptr;
+    std::atomic<float>* pModAmount   = nullptr;
+    std::atomic<float>* pVelMode     = nullptr;
+    std::atomic<float>* pVelFixed    = nullptr;
+    std::atomic<float>* pVelCurve    = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoxMidiAudioProcessor)
 };

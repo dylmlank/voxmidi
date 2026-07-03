@@ -44,6 +44,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoxMidiAudioProcessor::creat
     layout.add (std::make_unique<AudioParameterInt>   (ParameterID { "transpose", 1 }, "Transpose", -12, 12, 0));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "tempo", 1 }, "Tempo",
                                                        NormalisableRange<float> (40.0f, 300.0f, 1.0f), 120.0f));
+
+    const StringArray modSrc { "Off", "Vibrato", "Dynamics" };
+    const StringArray velMd  { "Dynamic", "Fixed" };
+    layout.add (std::make_unique<AudioParameterBool>  (ParameterID { "bend", 1 }, "Pitch Bend", false));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { "bendRange", 1 }, "Bend Range", 1, 12, 2));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "glide", 1 }, "Glide",
+                                                       NormalisableRange<float> (0.0f, 100.0f, 1.0f), 0.0f));
+    layout.add (std::make_unique<AudioParameterChoice>(ParameterID { "modSource", 1 }, "Mod Source", modSrc, 0));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { "modCC", 1 }, "Mod CC", 1, 119, 1));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "modAmount", 1 }, "Mod Amount",
+                                                       NormalisableRange<float> (0.0f, 100.0f, 1.0f), 100.0f));
+    layout.add (std::make_unique<AudioParameterChoice>(ParameterID { "velMode", 1 }, "Velocity", velMd, 0));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { "velFixed", 1 }, "Fixed Vel", 1, 127, 100));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "velCurve", 1 }, "Vel Curve",
+                                                       NormalisableRange<float> (-100.0f, 100.0f, 1.0f), 0.0f));
     return layout;
 }
 
@@ -71,6 +86,15 @@ VoxMidiAudioProcessor::VoxMidiAudioProcessor()
     pArpGate     = apvts.getRawParameterValue ("arpGate");
     pTranspose   = apvts.getRawParameterValue ("transpose");
     pTempo       = apvts.getRawParameterValue ("tempo");
+    pBend        = apvts.getRawParameterValue ("bend");
+    pBendRange   = apvts.getRawParameterValue ("bendRange");
+    pGlide       = apvts.getRawParameterValue ("glide");
+    pModSource   = apvts.getRawParameterValue ("modSource");
+    pModCC       = apvts.getRawParameterValue ("modCC");
+    pModAmount   = apvts.getRawParameterValue ("modAmount");
+    pVelMode     = apvts.getRawParameterValue ("velMode");
+    pVelFixed    = apvts.getRawParameterValue ("velFixed");
+    pVelCurve    = apvts.getRawParameterValue ("velCurve");
 }
 
 void VoxMidiAudioProcessor::prepareToPlay (double sampleRate, int)
@@ -84,6 +108,8 @@ void VoxMidiAudioProcessor::prepareToPlay (double sampleRate, int)
     perf.setup (sampleRate);
     lastInputNote = -1;
     perfHadNotes = false;
+    bendSmoothed = 0.0f; lastWheel = 8192; lastCC = -1; lastSentBendRange = -1;
+    vibSlow = 0.0f; vibDepth = 0.0f;
 
     ring.assign ((size_t) ringSize, 0.0f);
     analysis.assign ((size_t) ringSize, 0.0f);
@@ -139,6 +165,8 @@ void VoxMidiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const int   mode     = (int) pMode->load();          // 0 Melody, 1 Drums, 2 Both
     const bool  melodyOn = (mode == 0 || mode == 2);
     const bool  drumsOn  = (mode == 1 || mode == 2);
+    const int   chordType  = (int) pChord->load();
+    const bool  arpEnabled = pArp->load() > 0.5f;
 
     tracker.setLevelGate      (juce::jmap (sens, 0.0f, 100.0f, 0.06f, 0.004f));
     tracker.setConfidenceGate (juce::jmap (sens, 0.0f, 100.0f, 0.97f, 0.80f));
@@ -233,15 +261,93 @@ void VoxMidiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             if (melodyOn)
             {
                 const int inKey = (raw >= 0) ? vox::snapToScale (raw, key, scaleIdx) : -1;
-                const int mvel = juce::jlimit (1, 127,
-                    juce::roundToInt (juce::jmap (rms, 0.0f, 0.2f, 40.0f, 127.0f)));
+
+                // velocity curve
+                int mvel;
+                if ((int) pVelMode->load() == 1)
+                    mvel = (int) pVelFixed->load();
+                else
+                {
+                    const float x = juce::jlimit (0.0f, 1.0f, juce::jmap (rms, 0.0f, 0.2f, 0.0f, 1.0f));
+                    const float e = std::pow (2.0f, -pVelCurve->load() / 100.0f);
+                    mvel = juce::jlimit (1, 127, (int) std::round (1.0f + std::pow (x, e) * 126.0f));
+                }
+
                 if (inKey != lastInputNote)
                 {
                     perf.noteInput (inKey, mvel);
                     lastInputNote = inKey;
                 }
                 displayNote.store (perf.currentRootForDisplay());
-                currentFreq.store (tracker.getCurrentFrequency());
+                const float fHz = tracker.getCurrentFrequency();
+                currentFreq.store (fHz);
+
+                const int soundRoot = perf.currentRootUnshifted();
+                const float semis = (fHz > 0.0f) ? (69.0f + 12.0f * std::log2 (fHz / 440.0f)) : 0.0f;
+
+                // pitch bend — mono only (no chord, no arp)
+                const bool bendOn = (pBend->load() > 0.5f) && chordType == 0 && ! arpEnabled;
+                if (bendOn && soundRoot >= 0 && fHz > 0.0f)
+                {
+                    const int range = juce::jlimit (1, 12, (int) pBendRange->load());
+                    if (range != lastSentBendRange)
+                    {
+                        // RPN 0: set the synth's pitch-bend sensitivity to match
+                        const int rpn[4][2] = { { 101, 0 }, { 100, 0 }, { 6, range }, { 38, 0 } };
+                        for (auto& cc : rpn)
+                        {
+                            const auto m = juce::MidiMessage::controllerEvent (channel, cc[0], cc[1]);
+                            midi.addEvent (m, i);
+                            if (loopOut) loopOut->sendMessageNow (m);
+                        }
+                        lastSentBendRange = range;
+                    }
+                    const float dev = semis - (float) soundRoot;
+                    const float alpha = juce::jmap (pGlide->load(), 0.0f, 100.0f, 1.0f, 0.02f);
+                    bendSmoothed += (dev - bendSmoothed) * alpha;
+                    const float norm = juce::jlimit (-1.0f, 1.0f, bendSmoothed / (float) range);
+                    const int wheel = juce::jlimit (0, 16383, 8192 + (int) (norm * 8191.0f));
+                    if (wheel != lastWheel)
+                    {
+                        const auto pw = juce::MidiMessage::pitchWheel (channel, wheel);
+                        midi.addEvent (pw, i);
+                        if (loopOut) loopOut->sendMessageNow (pw);
+                        lastWheel = wheel;
+                    }
+                }
+                else if (lastWheel != 8192)
+                {
+                    const auto pw = juce::MidiMessage::pitchWheel (channel, 8192);
+                    midi.addEvent (pw, i);
+                    if (loopOut) loopOut->sendMessageNow (pw);
+                    lastWheel = 8192;
+                    bendSmoothed = 0.0f;
+                }
+
+                // mod source -> CC
+                const int modSrc = (int) pModSource->load();
+                if (modSrc > 0)
+                {
+                    float val = 0.0f;
+                    if (modSrc == 2) // dynamics (loudness)
+                        val = juce::jlimit (0.0f, 1.0f, rms / 0.2f);
+                    else if (fHz > 0.0f) // vibrato depth
+                    {
+                        vibSlow += (semis - vibSlow) * 0.05f;
+                        vibDepth += (std::fabs (semis - vibSlow) - vibDepth) * 0.2f;
+                        val = juce::jlimit (0.0f, 1.0f, vibDepth / 0.5f);
+                    }
+                    val *= pModAmount->load() / 100.0f;
+                    const int cc = juce::jlimit (0, 127, (int) (val * 127.0f));
+                    if (cc != lastCC)
+                    {
+                        const auto m = juce::MidiMessage::controllerEvent (channel,
+                            juce::jlimit (0, 119, (int) pModCC->load()), cc);
+                        midi.addEvent (m, i);
+                        if (loopOut) loopOut->sendMessageNow (m);
+                        lastCC = cc;
+                    }
+                }
             }
         }
     }

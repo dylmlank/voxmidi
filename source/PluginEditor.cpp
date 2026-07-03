@@ -33,15 +33,20 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     chordBox.addItemList ({ "Off", "Octave", "Power", "Triad", "7th" }, 1);
     patternBox.addItemList ({ "Up", "Down", "Up-Down", "Random" }, 1);
     rateBox.addItemList ({ "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" }, 1);
-    for (auto* c : { &modeBox, &keyBox, &scaleBox, &responseBox, &chordBox, &patternBox, &rateBox })
+    modSourceBox.addItemList ({ "Off", "Vibrato", "Dynamics" }, 1);
+    velModeBox.addItemList ({ "Dynamic", "Fixed" }, 1);
+    for (auto* c : { &modeBox, &keyBox, &scaleBox, &responseBox, &chordBox, &patternBox, &rateBox,
+                     &modSourceBox, &velModeBox })
         addAndMakeVisible (c);
-    modeAtt    = std::make_unique<CA> (processor.apvts, "mode", modeBox);
-    keyAtt     = std::make_unique<CA> (processor.apvts, "key", keyBox);
-    scaleAtt   = std::make_unique<CA> (processor.apvts, "scale", scaleBox);
-    respAtt    = std::make_unique<CA> (processor.apvts, "response", responseBox);
-    chordAtt   = std::make_unique<CA> (processor.apvts, "chord", chordBox);
-    patternAtt = std::make_unique<CA> (processor.apvts, "arpPattern", patternBox);
-    rateAtt    = std::make_unique<CA> (processor.apvts, "arpRate", rateBox);
+    modeAtt      = std::make_unique<CA> (processor.apvts, "mode", modeBox);
+    keyAtt       = std::make_unique<CA> (processor.apvts, "key", keyBox);
+    scaleAtt     = std::make_unique<CA> (processor.apvts, "scale", scaleBox);
+    respAtt      = std::make_unique<CA> (processor.apvts, "response", responseBox);
+    chordAtt     = std::make_unique<CA> (processor.apvts, "chord", chordBox);
+    patternAtt   = std::make_unique<CA> (processor.apvts, "arpPattern", patternBox);
+    rateAtt      = std::make_unique<CA> (processor.apvts, "arpRate", rateBox);
+    modSourceAtt = std::make_unique<CA> (processor.apvts, "modSource", modSourceBox);
+    velModeAtt   = std::make_unique<CA> (processor.apvts, "velMode", velModeBox);
 
     auto initKnob = [this] (juce::Slider& s)
     {
@@ -49,7 +54,8 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
         s.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 64, 16);
         addAndMakeVisible (s);
     };
-    for (auto* s : { &sensitivity, &smoothing, &drumSens, &octave, &arpOctaves, &arpGate, &transpose, &tempo })
+    for (auto* s : { &sensitivity, &smoothing, &drumSens, &octave, &arpOctaves, &arpGate, &transpose, &tempo,
+                     &bendRange, &glide, &modCC, &modAmount, &velFixed, &velCurve })
         initKnob (*s);
     sensAtt      = std::make_unique<SA> (processor.apvts, "sensitivity", sensitivity);
     smoothAtt    = std::make_unique<SA> (processor.apvts, "smoothing", smoothing);
@@ -59,6 +65,12 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     arpGateAtt   = std::make_unique<SA> (processor.apvts, "arpGate", arpGate);
     transposeAtt = std::make_unique<SA> (processor.apvts, "transpose", transpose);
     tempoAtt     = std::make_unique<SA> (processor.apvts, "tempo", tempo);
+    bendRangeAtt = std::make_unique<SA> (processor.apvts, "bendRange", bendRange);
+    glideAtt     = std::make_unique<SA> (processor.apvts, "glide", glide);
+    modCCAtt     = std::make_unique<SA> (processor.apvts, "modCC", modCC);
+    modAmountAtt = std::make_unique<SA> (processor.apvts, "modAmount", modAmount);
+    velFixedAtt  = std::make_unique<SA> (processor.apvts, "velFixed", velFixed);
+    velCurveAtt  = std::make_unique<SA> (processor.apvts, "velCurve", velCurve);
 
     holdBtn.setClickingTogglesState (true);
     arpBtn.setClickingTogglesState (true);
@@ -68,6 +80,11 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     addAndMakeVisible (arpBtn);
     holdAtt = std::make_unique<BA> (processor.apvts, "hold", holdBtn);
     arpAtt  = std::make_unique<BA> (processor.apvts, "arp", arpBtn);
+
+    bendBtn.setClickingTogglesState (true);
+    bendBtn.setColour (juce::TextButton::buttonOnColourId, VoxLookAndFeel::accent);
+    addAndMakeVisible (bendBtn);
+    bendAtt = std::make_unique<BA> (processor.apvts, "bend", bendBtn);
 
     auto nudgeOctave = [this] (float delta)
     {
@@ -105,7 +122,7 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     addAndMakeVisible (useKeyBtn);
     addAndMakeVisible (usePresetBtn);
 
-    setSize (660, 656);
+    setSize (660, 872);
     startTimerHz (30);
 }
 
@@ -209,6 +226,29 @@ void VoxMidiAudioProcessorEditor::resized()
     transpose.setBounds (pk.removeFromLeft (pkw).reduced (8));
     octave.setBounds (pk.removeFromLeft (pkw).reduced (8));
     tempo.setBounds (pk.removeFromLeft (pkw).reduced (8));
+
+    r.removeFromTop (8);
+    exprHeader = r.removeFromTop (16);
+    r.removeFromTop (6);
+    auto ea = r.removeFromTop (44);
+    auto placeExpr = [&ea] (juce::Component& c, int w)
+    {
+        c.setBounds (ea.removeFromLeft (w).withSizeKeepingCentre (w, 28));
+        ea.removeFromLeft (12);
+    };
+    placeExpr (bendBtn, 84);
+    placeExpr (modSourceBox, 120);
+    placeExpr (velModeBox, 120);
+
+    r.removeFromTop (26);
+    auto ek = r.removeFromTop (116);
+    const int ekw = ek.getWidth() / 6;
+    bendRange.setBounds (ek.removeFromLeft (ekw).reduced (6));
+    glide.setBounds (ek.removeFromLeft (ekw).reduced (6));
+    modCC.setBounds (ek.removeFromLeft (ekw).reduced (6));
+    modAmount.setBounds (ek.removeFromLeft (ekw).reduced (6));
+    velFixed.setBounds (ek.removeFromLeft (ekw).reduced (6));
+    velCurve.setBounds (ek.removeFromLeft (ekw).reduced (6));
 }
 
 void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
@@ -225,6 +265,7 @@ void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (12.0f, juce::Font::bold));
     g.drawText ("INPUT", inputHeader, juce::Justification::centredLeft);
     g.drawText ("PERFORMANCE", perfHeader, juce::Justification::centredLeft);
+    g.drawText ("EXPRESSION", exprHeader, juce::Justification::centredLeft);
 
     // readout panel
     g.setColour (L::panel);
@@ -283,6 +324,14 @@ void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
     caption (transpose, "TRANSPOSE");
     caption (octave, "OCTAVE");
     caption (tempo, "TEMPO");
+    caption (modSourceBox, "MOD SOURCE");
+    caption (velModeBox, "VELOCITY");
+    caption (bendRange, "BEND RANGE");
+    caption (glide, "GLIDE");
+    caption (modCC, "MOD CC");
+    caption (modAmount, "MOD AMT");
+    caption (velFixed, "FIXED VEL");
+    caption (velCurve, "VEL CURVE");
 }
 
 void VoxMidiAudioProcessorEditor::timerCallback()
