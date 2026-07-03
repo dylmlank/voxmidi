@@ -46,4 +46,24 @@ namespace vox
 
         return midiNote + bestDelta;
     }
+
+    int scaleDegreeUp (int midiNote, int keyRoot, int scaleIndex, int degrees)
+    {
+        if (scaleIndex <= 0 || scaleIndex >= NUM_SCALES)
+            return midiNote + degrees; // Chromatic fallback (not used for chromatic chords)
+
+        const ScaleDef& s = SCALES[scaleIndex];
+        const int snapped = snapToScale (midiNote, keyRoot, scaleIndex);
+        const int pc = (((snapped - keyRoot) % 12) + 12) % 12;
+
+        int idx = 0;
+        for (int i = 0; i < s.count; ++i)
+            if (s.intervals[i] == pc) { idx = i; break; }
+
+        const int octaveBase = snapped - keyRoot - pc; // multiple of 12
+        const int target = idx + degrees;
+        const int octShift = target / s.count;
+        const int deg = target % s.count;
+        return keyRoot + octaveBase + s.intervals[deg] + 12 * octShift;
+    }
 }

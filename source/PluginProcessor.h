@@ -8,6 +8,7 @@
 #include "dsp/NoteTracker.h"
 #include "dsp/KeyEstimator.h"
 #include "dsp/TransientDetector.h"
+#include "Performance.h"
 
 // VoxMIDI — voice in -> MIDI notes out. Parameters live in an APVTS (presets, save/load,
 // host automation). The signal path: detect pitch (YIN) -> stable note (NoteTracker) ->
@@ -66,6 +67,9 @@ private:
     NoteTracker           tracker;
     vox::KeyEstimator     keyEstimator;
     vox::TransientDetector transient;
+    Performance           perf;
+    int  lastInputNote = -1;
+    bool perfHadNotes = false;
 
     std::vector<float> ring;      // circular buffer of recent mono samples
     std::vector<float> analysis;  // linearized window handed to the detector
@@ -86,6 +90,15 @@ private:
     std::atomic<float>* pChannel     = nullptr;
     std::atomic<float>* pMode        = nullptr;
     std::atomic<float>* pDrumSens    = nullptr;
+    std::atomic<float>* pHold        = nullptr;
+    std::atomic<float>* pChord       = nullptr;
+    std::atomic<float>* pArp         = nullptr;
+    std::atomic<float>* pArpPattern  = nullptr;
+    std::atomic<float>* pArpRate     = nullptr;
+    std::atomic<float>* pArpOctaves  = nullptr;
+    std::atomic<float>* pArpGate     = nullptr;
+    std::atomic<float>* pTranspose   = nullptr;
+    std::atomic<float>* pTempo       = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoxMidiAudioProcessor)
 };

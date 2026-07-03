@@ -29,6 +29,21 @@ juce::AudioProcessorValueTreeState::ParameterLayout VoxMidiAudioProcessor::creat
     layout.add (std::make_unique<AudioParameterChoice>(ParameterID { "mode", 1 }, "Mode", modes, 0));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "drumSensitivity", 1 }, "Drum Sensitivity",
                                                        NormalisableRange<float> (0.0f, 100.0f, 1.0f), 50.0f));
+
+    const StringArray chords { "Off", "Octave", "Power", "Triad", "7th" };
+    const StringArray arpPat { "Up", "Down", "Up-Down", "Random" };
+    const StringArray arpRt  { "1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32" };
+    layout.add (std::make_unique<AudioParameterBool>  (ParameterID { "hold", 1 }, "Hold", false));
+    layout.add (std::make_unique<AudioParameterChoice>(ParameterID { "chord", 1 }, "Chord", chords, 0));
+    layout.add (std::make_unique<AudioParameterBool>  (ParameterID { "arp", 1 }, "Arp", false));
+    layout.add (std::make_unique<AudioParameterChoice>(ParameterID { "arpPattern", 1 }, "Arp Pattern", arpPat, 0));
+    layout.add (std::make_unique<AudioParameterChoice>(ParameterID { "arpRate", 1 }, "Arp Rate", arpRt, 1));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { "arpOctaves", 1 }, "Arp Octaves", 1, 3, 1));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "arpGate", 1 }, "Arp Gate",
+                                                       NormalisableRange<float> (10.0f, 100.0f, 1.0f), 60.0f));
+    layout.add (std::make_unique<AudioParameterInt>   (ParameterID { "transpose", 1 }, "Transpose", -12, 12, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "tempo", 1 }, "Tempo",
+                                                       NormalisableRange<float> (40.0f, 300.0f, 1.0f), 120.0f));
     return layout;
 }
 
@@ -47,6 +62,15 @@ VoxMidiAudioProcessor::VoxMidiAudioProcessor()
     pChannel     = apvts.getRawParameterValue ("channel");
     pMode        = apvts.getRawParameterValue ("mode");
     pDrumSens    = apvts.getRawParameterValue ("drumSensitivity");
+    pHold        = apvts.getRawParameterValue ("hold");
+    pChord       = apvts.getRawParameterValue ("chord");
+    pArp         = apvts.getRawParameterValue ("arp");
+    pArpPattern  = apvts.getRawParameterValue ("arpPattern");
+    pArpRate     = apvts.getRawParameterValue ("arpRate");
+    pArpOctaves  = apvts.getRawParameterValue ("arpOctaves");
+    pArpGate     = apvts.getRawParameterValue ("arpGate");
+    pTranspose   = apvts.getRawParameterValue ("transpose");
+    pTempo       = apvts.getRawParameterValue ("tempo");
 }
 
 void VoxMidiAudioProcessor::prepareToPlay (double sampleRate, int)
@@ -57,6 +81,9 @@ void VoxMidiAudioProcessor::prepareToPlay (double sampleRate, int)
     detector.setup (sampleRate, ringSize);
     tracker.setup (sampleRate);
     transient.setup (sampleRate);
+    perf.setup (sampleRate);
+    lastInputNote = -1;
+    perfHadNotes = false;
 
     ring.assign ((size_t) ringSize, 0.0f);
     analysis.assign ((size_t) ringSize, 0.0f);
@@ -121,15 +148,31 @@ void VoxMidiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     const int activeWindow = (respIdx == 0) ? 1024 : (respIdx == 2) ? 4096 : 2048;
     const bool toLoop = (wrapperType == wrapperType_Standalone && midiOut != nullptr);
+    juce::MidiOutput* const loopOut = toLoop ? midiOut.get() : nullptr;
 
-    // if melody was just switched off, release any note still held
-    if (! melodyOn && lastEmittedNote >= 0)
+    // host tempo drives the arpeggiator; fall back to the Tempo param (standalone)
+    double bpm = pTempo->load();
+    if (auto* ph = getPlayHead())
+        if (auto pos = ph->getPosition())
+            if (pos->getBpm())
+                bpm = *pos->getBpm();
+
+    perf.setChannel (channel);
+    perf.setKeyScale (key, scaleIdx);
+    perf.setShift (12 * octave + (int) pTranspose->load());
+    perf.setHold (pHold->load() > 0.5f);
+    perf.setChord ((int) pChord->load());
+    perf.setArp (pArp->load() > 0.5f, (int) pArpPattern->load(), (int) pArpRate->load(),
+                 (int) pArpOctaves->load(), pArpGate->load() / 100.0f);
+    perf.setTempo (bpm);
+
+    if (! melodyOn)
     {
-        const auto off = juce::MidiMessage::noteOff (channel, lastEmittedNote);
-        midi.addEvent (off, 0);
-        if (toLoop) midiOut->sendMessageNow (off);
-        lastEmittedNote = -1;
-        displayNote.store (-1);
+        if (perfHadNotes) { perf.reset (midi, loopOut); perfHadNotes = false; lastInputNote = -1; displayNote.store (-1); }
+    }
+    else
+    {
+        perfHadNotes = true;
     }
 
     float peak = 0.0f;
@@ -161,6 +204,9 @@ void VoxMidiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         }
 
+        if (melodyOn)
+            perf.processSample (i, midi, loopOut);
+
         ring[(size_t) ringWrite] = s;
         ringWrite = (ringWrite + 1) % ringSize;
 
@@ -186,34 +232,16 @@ void VoxMidiAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             if (melodyOn)
             {
-                int out = raw;
-                if (out >= 0)
+                const int inKey = (raw >= 0) ? vox::snapToScale (raw, key, scaleIdx) : -1;
+                const int mvel = juce::jlimit (1, 127,
+                    juce::roundToInt (juce::jmap (rms, 0.0f, 0.2f, 40.0f, 127.0f)));
+                if (inKey != lastInputNote)
                 {
-                    out = vox::snapToScale (out, key, scaleIdx) + 12 * octave;
-                    out = juce::jlimit (0, 127, out);
+                    perf.noteInput (inKey, mvel);
+                    lastInputNote = inKey;
                 }
-                displayNote.store (out);
+                displayNote.store (perf.currentRootForDisplay());
                 currentFreq.store (tracker.getCurrentFrequency());
-
-                if (out != lastEmittedNote)
-                {
-                    const int vel = juce::jlimit (1, 127,
-                        juce::roundToInt (juce::jmap (rms, 0.0f, 0.2f, 40.0f, 127.0f)));
-
-                    if (lastEmittedNote >= 0)
-                    {
-                        const auto off = juce::MidiMessage::noteOff (channel, lastEmittedNote);
-                        midi.addEvent (off, i);
-                        if (toLoop) midiOut->sendMessageNow (off);
-                    }
-                    if (out >= 0)
-                    {
-                        const auto onn = juce::MidiMessage::noteOn (channel, out, (juce::uint8) vel);
-                        midi.addEvent (onn, i);
-                        if (toLoop) midiOut->sendMessageNow (onn);
-                    }
-                    lastEmittedNote = out;
-                }
             }
         }
     }
