@@ -7,6 +7,7 @@
 #include "dsp/YinPitchDetector.h"
 #include "dsp/NoteTracker.h"
 #include "dsp/KeyEstimator.h"
+#include "dsp/TransientDetector.h"
 
 // VoxMIDI — voice in -> MIDI notes out. Parameters live in an APVTS (presets, save/load,
 // host automation). The signal path: detect pitch (YIN) -> stable note (NoteTracker) ->
@@ -47,6 +48,8 @@ public:
     std::atomic<int>   displayNote  { -1 };   // note being output (post octave + snap)
     std::atomic<int>   rawNote      { -1 };   // detected note pre-snap (feeds key estimate)
     std::atomic<float> currentFreq  { 0.0f };
+    std::atomic<int>   lastDrumNote { -1 };   // last drum GM note fired (36/38/42)
+    std::atomic<int>   drumHitCount { 0 };    // increments on each drum hit (editor flashes it)
 
     // recommendation — called from the editor timer (message thread only)
     void pushForRecommendation();
@@ -59,9 +62,10 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
-    YinPitchDetector  detector;
-    NoteTracker       tracker;
-    vox::KeyEstimator keyEstimator;
+    YinPitchDetector      detector;
+    NoteTracker           tracker;
+    vox::KeyEstimator     keyEstimator;
+    vox::TransientDetector transient;
 
     std::vector<float> ring;      // circular buffer of recent mono samples
     std::vector<float> analysis;  // linearized window handed to the detector
@@ -80,6 +84,8 @@ private:
     std::atomic<float>* pKey         = nullptr;
     std::atomic<float>* pScale       = nullptr;
     std::atomic<float>* pChannel     = nullptr;
+    std::atomic<float>* pMode        = nullptr;
+    std::atomic<float>* pDrumSens    = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VoxMidiAudioProcessor)
 };

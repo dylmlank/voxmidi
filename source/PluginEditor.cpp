@@ -24,14 +24,17 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     };
     addAndMakeVisible (presetBox);
 
+    modeBox.addItemList ({ "Melody", "Drums", "Both" }, 1);
     keyBox.addItemList ({ "C", "C#", "D", "D#", "E", "F",
                           "F#", "G", "G#", "A", "A#", "B" }, 1);
     scaleBox.addItemList ({ "Chromatic", "Major", "Minor", "Dorian", "Mixolydian",
                             "Pentatonic Maj", "Pentatonic Min", "Blues", "Harmonic Min" }, 1);
     responseBox.addItemList ({ "Fast", "Balanced", "Accurate" }, 1);
+    addAndMakeVisible (modeBox);
     addAndMakeVisible (keyBox);
     addAndMakeVisible (scaleBox);
     addAndMakeVisible (responseBox);
+    modeAtt  = std::make_unique<CA> (processor.apvts, "mode", modeBox);
     keyAtt   = std::make_unique<CA> (processor.apvts, "key", keyBox);
     scaleAtt = std::make_unique<CA> (processor.apvts, "scale", scaleBox);
     respAtt  = std::make_unique<CA> (processor.apvts, "response", responseBox);
@@ -45,9 +48,11 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     initKnob (sensitivity);
     initKnob (smoothing);
     initKnob (octave);
-    sensAtt   = std::make_unique<SA> (processor.apvts, "sensitivity", sensitivity);
-    smoothAtt = std::make_unique<SA> (processor.apvts, "smoothing", smoothing);
-    octaveAtt = std::make_unique<SA> (processor.apvts, "octave", octave);
+    initKnob (drumSens);
+    sensAtt     = std::make_unique<SA> (processor.apvts, "sensitivity", sensitivity);
+    smoothAtt   = std::make_unique<SA> (processor.apvts, "smoothing", smoothing);
+    octaveAtt   = std::make_unique<SA> (processor.apvts, "octave", octave);
+    drumSensAtt = std::make_unique<SA> (processor.apvts, "drumSensitivity", drumSens);
 
     suggestText.setText ("Listening...", juce::dontSendNotification);
     suggestText.setColour (juce::Label::textColourId, VoxLookAndFeel::text);
@@ -75,7 +80,7 @@ VoxMidiAudioProcessorEditor::VoxMidiAudioProcessorEditor (VoxMidiAudioProcessor&
     addAndMakeVisible (useKeyBtn);
     addAndMakeVisible (usePresetBtn);
 
-    setSize (560, 470);
+    setSize (640, 500);
     startTimerHz (30);
 }
 
@@ -92,6 +97,17 @@ juce::String VoxMidiAudioProcessorEditor::noteName (int midi)
     return juce::String (kKeyNames[midi % 12]) + juce::String (midi / 12 - 1);
 }
 
+juce::String VoxMidiAudioProcessorEditor::drumName (int gmNote)
+{
+    switch (gmNote)
+    {
+        case 36: return "KICK";
+        case 38: return "SNARE";
+        case 42: return "HI-HAT";
+        default: return "HIT";
+    }
+}
+
 void VoxMidiAudioProcessorEditor::resized()
 {
     auto r = getLocalBounds().reduced (16);
@@ -102,7 +118,7 @@ void VoxMidiAudioProcessorEditor::resized()
     r.removeFromTop (12);
 
     auto mid = r.removeFromTop (104);
-    readoutPanel = mid.removeFromLeft (268);
+    readoutPanel = mid.removeFromLeft (280);
     {
         auto rp = readoutPanel;
         meterBounds = rp.removeFromBottom (18).reduced (10, 5);
@@ -112,7 +128,7 @@ void VoxMidiAudioProcessorEditor::resized()
     suggestPanel = mid;
     {
         auto sp = suggestPanel.reduced (12, 10);
-        sp.removeFromTop (18); // caption drawn in paint
+        sp.removeFromTop (18);
         suggestText.setBounds (sp.removeFromTop (26));
         sp.removeFromTop (6);
         auto btns = sp.removeFromTop (28);
@@ -123,17 +139,27 @@ void VoxMidiAudioProcessorEditor::resized()
 
     r.removeFromTop (26);
     auto combos = r.removeFromTop (44);
-    keyBox.setBounds (combos.removeFromLeft (104).withSizeKeepingCentre (104, 28));
-    combos.removeFromLeft (14);
-    scaleBox.setBounds (combos.removeFromLeft (150).withSizeKeepingCentre (150, 28));
-    combos.removeFromLeft (14);
-    responseBox.setBounds (combos.removeFromLeft (120).withSizeKeepingCentre (120, 28));
+    auto placeCombo = [&combos] (juce::ComboBox& c, int w)
+    {
+        c.setBounds (combos.removeFromLeft (w).withSizeKeepingCentre (w, 28));
+        combos.removeFromLeft (14);
+    };
+    placeCombo (modeBox, 96);
+    placeCombo (keyBox, 84);
+    placeCombo (scaleBox, 140);
+    placeCombo (responseBox, 116);
 
     r.removeFromTop (30);
-    const int kw = r.getWidth() / 3;
-    sensitivity.setBounds (r.removeFromLeft (kw).reduced (8));
-    smoothing.setBounds (r.removeFromLeft (kw).reduced (8));
-    octave.setBounds (r.removeFromLeft (kw).reduced (8));
+    auto knobRow = r.removeFromTop (150);
+    const int kw = knobRow.getWidth() / 4;
+    auto placeKnob = [&knobRow, kw] (juce::Slider& s)
+    {
+        s.setBounds (knobRow.removeFromLeft (kw).reduced (8));
+    };
+    placeKnob (sensitivity);
+    placeKnob (smoothing);
+    placeKnob (octave);
+    placeKnob (drumSens);
 }
 
 void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
@@ -141,7 +167,6 @@ void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
     using L = VoxLookAndFeel;
     g.fillAll (L::bg);
 
-    // title
     g.setColour (L::text);
     g.setFont (juce::Font (22.0f, juce::Font::bold));
     g.drawText ("VoxMIDI", 16, 12, 240, 26, juce::Justification::centredLeft);
@@ -153,16 +178,21 @@ void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (L::panel);
     g.fillRoundedRectangle (readoutPanel.toFloat(), 8.0f);
     const bool active = (note >= 0);
+    const bool flashing = (drumFlashTicks > 0);
     {
         auto rb = readoutBounds.reduced (10);
-        auto hz = rb.removeFromBottom (22);
+        auto sub = rb.removeFromBottom (22);
         g.setColour (active ? L::accent : L::dim);
         g.setFont (juce::Font (52.0f, juce::Font::bold));
         g.drawText (noteName (note), rb, juce::Justification::centred);
-        g.setColour (L::dim);
-        g.setFont (13.0f);
-        g.drawText (active ? (juce::String (freq, 1) + " Hz") : juce::String ("listening..."),
-                    hz, juce::Justification::centred);
+
+        juce::String subText;
+        if (flashing)         subText = drumName (drumNote);
+        else if (active)      subText = juce::String (freq, 1) + " Hz";
+        else                  subText = "listening...";
+        g.setColour (flashing ? L::accent : L::dim);
+        g.setFont (flashing ? juce::Font (15.0f, juce::Font::bold) : juce::Font (13.0f));
+        g.drawText (subText, sub, juce::Justification::centred);
     }
     // input meter
     g.setColour (L::bg.brighter (0.06f));
@@ -180,21 +210,21 @@ void VoxMidiAudioProcessorEditor::paint (juce::Graphics& g)
     g.drawText ("SUGGESTED", suggestPanel.getX() + 12, suggestPanel.getY() + 10,
                 200, 14, juce::Justification::centredLeft);
 
-    // control captions
-    auto caption = [&] (juce::Component& c, const juce::String& t, bool below)
+    auto caption = [&] (juce::Component& c, const juce::String& t)
     {
         auto b = c.getBounds();
         g.setColour (L::dim);
         g.setFont (11.0f);
-        const int cy = below ? b.getBottom() + 2 : b.getY() - 16;
-        g.drawText (t, b.getX(), cy, b.getWidth(), 14, juce::Justification::centred);
+        g.drawText (t, b.getX(), b.getY() - 16, b.getWidth(), 14, juce::Justification::centred);
     };
-    caption (keyBox, "KEY", false);
-    caption (scaleBox, "SCALE", false);
-    caption (responseBox, "RESPONSE", false);
-    caption (sensitivity, "SENSITIVITY", false);
-    caption (smoothing, "SMOOTHING", false);
-    caption (octave, "OCTAVE", false);
+    caption (modeBox, "MODE");
+    caption (keyBox, "KEY");
+    caption (scaleBox, "SCALE");
+    caption (responseBox, "RESPONSE");
+    caption (sensitivity, "SENSITIVITY");
+    caption (smoothing, "SMOOTHING");
+    caption (octave, "OCTAVE");
+    caption (drumSens, "DRUM SENS");
 }
 
 void VoxMidiAudioProcessorEditor::timerCallback()
@@ -207,6 +237,17 @@ void VoxMidiAudioProcessorEditor::timerCallback()
     if (std::abs (l - level) > 0.005f) { level = l; changed = true; }
     if (nt != note)                    { note = nt; changed = true; }
     if (std::abs (f - freq) > 0.5f)    { freq = f; changed = true; }
+
+    // drum-hit flash
+    const int hc = processor.drumHitCount.load();
+    if (hc != lastSeenHit)
+    {
+        lastSeenHit = hc;
+        drumNote = processor.lastDrumNote.load();
+        drumFlashTicks = 10;
+        changed = true;
+    }
+    if (drumFlashTicks > 0) { --drumFlashTicks; changed = true; }
 
     processor.pushForRecommendation();
     if (++ticks % 15 == 0)

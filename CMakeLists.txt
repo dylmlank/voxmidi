@@ -36,7 +36,8 @@ target_sources(VoxMIDI PRIVATE
     source/dsp/YinPitchDetector.cpp
     source/dsp/NoteTracker.cpp
     source/dsp/ScaleSnapper.cpp
-    source/dsp/KeyEstimator.cpp)
+    source/dsp/KeyEstimator.cpp
+    source/dsp/TransientDetector.cpp)
 
 target_include_directories(VoxMIDI PRIVATE source)
 
